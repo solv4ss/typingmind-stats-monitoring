@@ -4,7 +4,8 @@ An advanced extension for TypingMind that provides detailed token usage statisti
 
 > **Note:** This is an unofficial, community-made extension for TypingMind.
 
-
+![Version](https://img.shields.io/badge/version-1.0-blue.svg)
+![License](https://camo.githubusercontent.com/18a59883b89ed6ee32c4afc2c93f81e65ec844d96f708b1499eb234a796889b6/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4c6963656e73652d434325323042592d2d4e432d2d5341253230342e302d677265656e)
 
 ---
 

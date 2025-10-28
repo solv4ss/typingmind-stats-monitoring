@@ -38,7 +38,16 @@ This extension reads your local TypingMind chat data (nothing is sent anywhere) 
 
 ## 🚀 Installation
 
-*Installation instructions will be detailed here soon.*
+Installing the extension is simple and only takes a minute.
+
+1.  In TypingMind, go to **Settings** > **Extensions**.
+2.  In the "Enter extension URL" field, paste the following URL:
+    ```
+    https://raw.githack.com/solv4ss/typingmind-stats-monitoring/refs/heads/main/stats-monitoring.js
+    ```
+3.  Click **Install**.
+4.  **Refresh the TypingMind page**.
+5.  That's it! You're ready to go.
 
 ---
 

@@ -1,5 +1,5 @@
 /*──────────────────────────────────────────────────────────────
-  TypingMind – Token Usage Stats & Cost Tracker V1.0 
+  TypingMind – Token Usage Stats & Cost Tracker V1.1
 ──────────────────────────────────────────────────────────────*/
 if (window.typingMindStatsExtension) {
   console.log("Stats Extension already loaded");
@@ -517,7 +517,7 @@ if (window.typingMindStatsExtension) {
           text-align: center;
         ">
           <div style="font-size: 2.5rem; margin-bottom: 1rem;">⚠️</div>
-          <h3 style="font-size: 1.25rem; font-weight: bold; margin-bottom: 0.75rem;">Budget Exceeded</h3>
+                    <h3 style="font-size: 1.25rem; font-weight: bold; margin-bottom: 0.75rem;">Budget Exceeded</h3>
           <p style="color: #a1a1aa; margin-bottom: 1.25rem; font-size: 0.9375rem;">
             Your ${blockStatus.status.label.toLowerCase()} budget limit has been reached.<br>
             <strong style="color: white;">$${blockStatus.status.spent.toFixed(2)} / $${blockStatus.status.budget.toFixed(2)}</strong>
@@ -559,13 +559,11 @@ if (window.typingMindStatsExtension) {
       }, 2000);
 
       this.statsRefreshInterval = setInterval(async () => {
-        if (typeof this.statsManager.refreshStats === 'function') {
+        if (this.config.enabled && document.hasFocus()) {
           await this.statsManager.refreshStats();
           this.injectChatProgressBar();
-        } else {
-          console.error("Erreur: La fonction refreshStats n'existe pas sur statsManager.");
         }
-      }, 60 * 1000); // 60 000 ms = 1 minute
+      }, 5 * 60 * 1000); 
     }
 
     setupSendButtonObserver() {
@@ -589,19 +587,87 @@ if (window.typingMindStatsExtension) {
   }
   
   /* ============================================================
-     STATS MANAGER
+     STATS MANAGER - OPTIMISÉ
   ============================================================ */
   class StatsManager {
     constructor() {
       this.customModels = this.loadCustomModels();
       this.statsData = this.loadStatsData();
       this.debugMode = this.isDebugMode();
+      this.lastFullRefresh = 0;
+      this.isAnalyzing = false;
     }
 
     async refreshStats() {
-      console.log('🔄 Refreshing statistics in progress...');
-      await this.analyzeAllChats();
-      console.log('✅ Refreshed statistics.');
+      if (this.isAnalyzing) {
+        console.log('⏳ Analysis already in progress, skipping...');
+        return;
+      }
+
+      const now = Date.now();
+      const timeSinceLastRefresh = now - this.lastFullRefresh;
+      
+      if (timeSinceLastRefresh > 10 * 60 * 1000) {
+        console.log('🔄 Full refresh (10+ minutes since last)...');
+        await this.analyzeAllChats();
+        this.lastFullRefresh = now;
+      } else {
+        console.log('🔄 Quick refresh (recent chats only)...');
+        await this.analyzeRecentChats();
+      }
+    }
+
+    async analyzeRecentChats() {
+      if (this.isAnalyzing) return;
+      this.isAnalyzing = true;
+
+      try {
+        const idb = await this.getIndexedDB();
+        const fiveMinutesAgo = Date.now() - (5 * 60 * 1000);
+        const recentChats = await this.getRecentChats(idb, fiveMinutesAgo);
+        
+        console.log(`📊 Quick analyzing ${recentChats.length} recent chats...`);
+        
+        for (const chat of recentChats) {
+          this.processChat(chat);
+        }
+
+        this.saveStatsData();
+        console.log('✅ Quick refresh complete');
+      } catch (error) {
+        console.error('❌ Quick refresh failed:', error);
+      } finally {
+        this.isAnalyzing = false;
+      }
+    }
+
+    async getRecentChats(idb, sinceTimestamp) {
+      return new Promise((resolve, reject) => {
+        const tx = idb.transaction(['keyval'], 'readonly');
+        const store = tx.objectStore('keyval');
+        const recentChats = [];
+
+        store.openCursor().onsuccess = (e) => {
+          const cursor = e.target.result;
+          if (!cursor) {
+            resolve(recentChats);
+            return;
+          }
+
+          const key = cursor.key;
+          if (typeof key === 'string' && key.startsWith('CHAT_')) {
+            const chat = cursor.value;
+            const chatTimestamp = new Date(chat.updatedAt || chat.createdAt).getTime();
+            
+            if (chatTimestamp > sinceTimestamp) {
+              recentChats.push(chat);
+            }
+          }
+          cursor.continue();
+        };
+
+        store.openCursor().onerror = reject;
+      });
     }
 
     isDebugMode() {
@@ -621,9 +687,23 @@ if (window.typingMindStatsExtension) {
     loadStatsData() {
       try {
         const stored = localStorage.getItem('TM_tokenUsageStats');
-        return stored ? JSON.parse(stored) : { daily: {}, models: {} };
+        const defaults = { 
+          daily: {}, 
+          models: {},
+          lastAnalyzed: {}, 
+          version: 2 
+        };
+        const data = stored ? JSON.parse(stored) : defaults;
+        
+        if (!data.version || data.version < 2) {
+          console.log('📦 Migrating stats data to v2...');
+          data.lastAnalyzed = {};
+          data.version = 2;
+        }
+        
+        return data;
       } catch {
-        return { daily: {}, models: {} };
+        return { daily: {}, models: {}, lastAnalyzed: {}, version: 2 };
       }
     }
 
@@ -665,11 +745,15 @@ if (window.typingMindStatsExtension) {
         'claude-3-5-haiku': { prompt: 0.8, completion: 4 },
         'claude-3-7-sonnet': { prompt: 3, completion: 15 },
         'claude-sonnet-3.7': { prompt: 3, completion: 15 },
+        'claude-sonnet-4.5': { prompt: 3, completion: 15 },
+        'claude-haiku-4.5': { prompt: 0.25, completion: 1.25 },
         'gemini-1.5-pro': { prompt: 1.25, completion: 5 },
         'gemini-1.5-flash': { prompt: 0.075, completion: 0.3 },
         'gemini-2.0-flash': { prompt: 0.15, completion: 0.6 },
         'gemini-2.5-flash': { prompt: 0.3, completion: 2.5 },
         'gemini-2.5-pro': { prompt: 1.25, completion: 10 },
+        'deepseek-v3.2': { prompt: 0.14, completion: 0.28 },
+        'o3': { prompt: 15, completion: 60 },
       };
 
       for (const [key, price] of Object.entries(defaultPrices)) {
@@ -682,80 +766,90 @@ if (window.typingMindStatsExtension) {
     }
 
     async analyzeAllChats() {
-      const idb = await this.getIndexedDB();
-      const chats = await this.getAllChats(idb);
-      
-      console.log(`📊 Analyzing ${chats.length} chats...`);
-      
-      this.statsData = { daily: {}, models: {} };
-
-      for (const chat of chats) {
-        this.processChat(chat);
+      if (this.isAnalyzing) {
+        console.log('⏳ Analysis already in progress...');
+        return this.statsData;
       }
 
-      this.saveStatsData();
-      console.log('✅ Stats analysis complete');
+      this.isAnalyzing = true;
       
-      if (this.debugMode) {
-        console.log('🐛 DEBUG: Model stats:', this.statsData.models);
+      try {
+        const idb = await this.getIndexedDB();
+        const chats = await this.getAllChats(idb);
+        
+        console.log(`📊 Analyzing ${chats.length} chats with smart caching...`);
+        
+        let analyzed = 0;
+        let skipped = 0;
+        
+        for (let i = 0; i < chats.length; i += 20) {
+          const batch = chats.slice(i, i + 20);
+          
+          for (const chat of batch) {
+            const chatLastModified = new Date(chat.updatedAt || chat.createdAt).getTime();
+            const lastAnalyzed = this.statsData.lastAnalyzed[chat.id] || 0;
+            
+            if (chatLastModified <= lastAnalyzed && this.statsData.version === 2) {
+              skipped++;
+              continue;
+            }
+            
+            this.processChat(chat);
+            this.statsData.lastAnalyzed[chat.id] = Date.now();
+            analyzed++;
+          }
+          
+          if (i % 100 === 0 && i > 0) {
+            await new Promise(resolve => setTimeout(resolve, 10));
+            console.log(`📊 Progress: ${i}/${chats.length} chats processed...`);
+          }
+          
+          if (i % 200 === 0 && i > 0) {
+            this.saveStatsData();
+          }
+        }
+
+        this.saveStatsData();
+        console.log(`✅ Analysis complete: ${analyzed} analyzed, ${skipped} skipped (cached)`);
+        
+        if (this.debugMode) {
+          console.log('🐛 DEBUG: Model stats:', this.statsData.models);
+        }
+        
+        return this.statsData;
+      } catch (error) {
+        console.error('❌ Analysis failed:', error);
+        return this.statsData;
+      } finally {
+        this.isAnalyzing = false;
       }
-      
-      return this.statsData;
     }
 
     processChat(chat) {
       const messages = chat.messages || [];
-      const rawModelId = chat.model || 'unknown';
-      
-      let actualModelId = rawModelId;
-      const customModel = this.customModels.find(m => m.id === rawModelId);
-      
-      if (customModel && customModel.modelID) {
-        actualModelId = customModel.modelID;
-      } else {
-        const title = (chat.modelInfo?.title || '').toLowerCase().trim();
-        
-        const titleToModelMap = {
-          'claude-sonnet-3.7': 'claude-sonnet-3.7',
-          'claude-3-7-sonnet': 'claude-3-7-sonnet',
-          'claude-3-5-sonnet': 'claude-3-5-sonnet',
-          'claude-3-5-haiku': 'claude-3-5-haiku',
-          'claude-3-opus': 'claude-3-opus',
-          'claude-3-sonnet': 'claude-3-sonnet',
-          'claude-3-haiku': 'claude-3-haiku',
-          'gpt-4o-mini': 'gpt-4o-mini',
-          'gpt-4o': 'gpt-4o',
-          'gpt-4-turbo': 'gpt-4-turbo',
-          'gpt-4': 'gpt-4',
-          'gpt-3.5': 'gpt-3.5-turbo',
-          'gemini-2.5-pro': 'gemini-2.5-pro',
-          'gemini-2.5-flash': 'gemini-2.5-flash',
-          'gemini-2.0-flash': 'gemini-2.0-flash',
-          'gemini-1.5-pro': 'gemini-1.5-pro',
-          'gemini-1.5-flash': 'gemini-1.5-flash',
-        };
-        
-        for (const [key, modelId] of Object.entries(titleToModelMap)) {
-          if (title.includes(key)) {
-            actualModelId = modelId;
-            break;
-          }
-        }
-      }
-      
-      const modelId = this.normalizeModelId(actualModelId);
-      const modelTitle = (chat.modelInfo?.title || modelId).trim();
-      
-      const uniqueKey = `${modelTitle.toLowerCase()}|||${modelId}`;
       
       for (const msg of messages) {
         if (!msg.usage) continue;
+
+        const msgModelId = msg.model || chat.model || 'unknown';
+        
+        const customModel = this.customModels.find(m => m.id === msgModelId);
+        let actualModelId = msgModelId;
+        let modelTitle = chat.modelInfo?.title || msgModelId;
+        
+        if (customModel) {
+          actualModelId = customModel.modelID || msgModelId;
+          modelTitle = customModel.title || modelTitle;
+        }
+        
+        const normalizedId = this.normalizeModelId(actualModelId);
+        const uniqueKey = `${modelTitle.toLowerCase()}|||${normalizedId}`;
 
         const promptTokens = msg.usage.prompt_tokens || 0;
         const completionTokens = msg.usage.completion_tokens || 0;
         const totalTokens = msg.usage.total_tokens || (promptTokens + completionTokens);
 
-        const pricing = this.getModelPricing(modelId, modelTitle);
+        const pricing = this.getModelPricing(normalizedId, modelTitle);
         let cost = 0;
         
         if (pricing) {
@@ -785,10 +879,10 @@ if (window.typingMindStatsExtension) {
         if (!this.statsData.models[uniqueKey]) {
           this.statsData.models[uniqueKey] = {
             title: modelTitle,
-            customModelIds: [rawModelId],
-            modelId: modelId,
+            customModelIds: [msgModelId],
+            modelId: normalizedId,
             actualModelId: actualModelId,
-            rawModelIds: [rawModelId],
+            rawModelIds: [msgModelId],
             promptTokens: 0,
             completionTokens: 0,
             totalTokens: 0,
@@ -797,11 +891,11 @@ if (window.typingMindStatsExtension) {
             pricing: pricing
           };
         } else {
-          if (!this.statsData.models[uniqueKey].customModelIds.includes(rawModelId)) {
-            this.statsData.models[uniqueKey].customModelIds.push(rawModelId);
+          if (!this.statsData.models[uniqueKey].customModelIds.includes(msgModelId)) {
+            this.statsData.models[uniqueKey].customModelIds.push(msgModelId);
           }
-          if (!this.statsData.models[uniqueKey].rawModelIds.includes(rawModelId)) {
-            this.statsData.models[uniqueKey].rawModelIds.push(rawModelId);
+          if (!this.statsData.models[uniqueKey].rawModelIds.includes(msgModelId)) {
+            this.statsData.models[uniqueKey].rawModelIds.push(msgModelId);
           }
           
           if (!this.statsData.models[uniqueKey].pricing && pricing) {
@@ -1358,6 +1452,17 @@ if (window.typingMindStatsExtension) {
               ${this.statsManager.debugMode ? '<p style="color: #f59e0b; font-size: 0.875rem; margin-top: 0.5rem;">🐛 Debug Mode Active</p>' : ''}
             </div>
             <div class="tm-stats-header-actions" style="display: flex; gap: 0.75rem;">
+              <button id="reset-stats-btn" style="
+                    background:#ef4444;
+                    border:none;
+                    color:white;
+                    padding:0.75rem 1.25rem;
+                    border-radius:0.5rem;
+                    cursor:pointer;
+                    font-size:0.9375rem;
+                    transition:background 0.2s;">
+                🔄 Reset stats
+              </button>
               <button id="budget-settings-btn" style="
                 background: #10b981;
                 border: none;
@@ -1388,7 +1493,7 @@ if (window.typingMindStatsExtension) {
           </div>
 
           <div id="stats-loading" style="text-align: center; padding: 3rem 1rem; font-size: 1.125rem; color: #a1a1aa;">
-            ⏳ Analyzing chats...
+            ⏳ Loading stats...
           </div>
 
           <div id="stats-content" style="display: none;">
@@ -1499,6 +1604,23 @@ if (window.typingMindStatsExtension) {
 
       document.body.appendChild(page);
 
+      page.querySelector('#reset-stats-btn').addEventListener('click', async () => {
+        if (!confirm('Reset all stats ?')) return;
+
+        localStorage.removeItem('TM_tokenUsageStats');
+
+        statsApp.statsManager.statsData = {
+          daily: {}, models: {}, lastAnalyzed:{}, lastProcessed:{}, version:2
+        };
+        statsApp.statsManager.lastFullRefresh = 0;
+
+        await statsApp.statsManager.analyzeAllChats();
+
+        alert('✅ Stats reset.');
+        page.remove();
+        statsApp.ui.show();           
+      });
+
       page.querySelector('#close-stats').addEventListener('click', () => {
         this.cleanup();
         page.remove();
@@ -1508,7 +1630,7 @@ if (window.typingMindStatsExtension) {
         this.showBudgetModal();
       });
 
-      await this.loadStats(page);
+      this.loadStats(page);
     }
 
     showBudgetModal() {
@@ -1822,8 +1944,11 @@ if (window.typingMindStatsExtension) {
     }
 
     async loadStats(page) {
-      await this.statsManager.analyzeAllChats();
-
+      const loadingEl = page.querySelector('#stats-loading');
+      const contentEl = page.querySelector('#stats-content');
+      
+      loadingEl.textContent = '⏳ Loading cached data...';
+      
       const todayStats = this.statsManager.getTodayStats();
       const monthStats = this.statsManager.getMonthStats();
       const prediction = this.statsManager.getMonthPrediction();
@@ -1876,8 +2001,59 @@ if (window.typingMindStatsExtension) {
       this.paginationContainer = page.querySelector('#history-pagination');
       this.renderDailyHistory();
 
-      page.querySelector('#stats-loading').style.display = 'none';
-      page.querySelector('#stats-content').style.display = 'block';
+      loadingEl.style.display = 'none';
+      contentEl.style.display = 'block';
+
+      const timeSinceLastRefresh = Date.now() - this.statsManager.lastFullRefresh;
+      if (timeSinceLastRefresh > 10 * 60 * 1000) {
+        loadingEl.textContent = '🔄 Updating stats in background...';
+        loadingEl.style.display = 'block';
+        loadingEl.style.fontSize = '0.875rem';
+        loadingEl.style.padding = '1rem';
+        loadingEl.style.background = '#27272a';
+        loadingEl.style.borderRadius = '0.5rem';
+        loadingEl.style.marginBottom = '1rem';
+
+        await this.statsManager.analyzeAllChats();
+
+        const updatedTodayStats = this.statsManager.getTodayStats();
+        const updatedMonthStats = this.statsManager.getMonthStats();
+        const updatedPrediction = this.statsManager.getMonthPrediction();
+        const updatedLast30Days = this.statsManager.getLast30DaysData();
+        const updatedModelStats = this.statsManager.getModelStats(this.currentModelSort, this.currentSortOrder);
+        const updatedAllDailyData = this.statsManager.getAllDailyData();
+
+        page.querySelector('#today-cost').textContent = `$${updatedTodayStats.totalCost.toFixed(4)}`;
+        page.querySelector('#today-tokens').textContent = `${updatedTodayStats.totalTokens.toLocaleString()} tokens • ${updatedTodayStats.messages} msg`;
+
+        page.querySelector('#month-cost').textContent = `$${updatedMonthStats.totalCost.toFixed(2)}`;
+        page.querySelector('#month-tokens').textContent = `${updatedMonthStats.totalTokens.toLocaleString()} tokens • ${updatedMonthStats.messages} msg`;
+
+        page.querySelector('#prediction-cost').textContent = `$${updatedPrediction.predictedCost.toFixed(2)}`;
+        page.querySelector('#prediction-confidence').textContent = `${Math.round(updatedPrediction.confidence)}% elapsed • ${updatedPrediction.predictedMessages.toLocaleString()} msg`;
+
+        this.renderBudgetProgress();
+
+        if (!isMobile) {
+          this.charts.forEach(chart => chart.destroy());
+          this.charts = [];
+          
+          const costCanvas = page.querySelector('#cost-chart');
+          const tokensCanvas = page.querySelector('#tokens-chart');
+          
+          if (costCanvas && tokensCanvas) {
+            this.charts.push(new InteractiveChart(costCanvas, updatedLast30Days, 'cost'));
+            this.charts.push(new InteractiveChart(tokensCanvas, updatedLast30Days, 'tokens'));
+          }
+        }
+
+        this.populateModelsTable(page.querySelector('#models-table'), updatedModelStats);
+
+        this.allDailyData = updatedAllDailyData;
+        this.renderDailyHistory();
+
+        loadingEl.style.display = 'none';
+      }
     }
 
     renderDailyHistory() {
@@ -2130,7 +2306,7 @@ if (window.typingMindStatsExtension) {
     }
 
     async initialize() {
-      console.log('📊 Token Usage Stats Extension V1.0 (Mobile Ready) loaded');
+      console.log('📊 Token Usage Stats Extension V1.1 loaded');
       if (this.statsManager.debugMode) {
         console.log('🐛 Debug mode enabled - add ?statsdebug to URL');
       }
